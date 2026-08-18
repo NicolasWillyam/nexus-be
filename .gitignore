@@ -1,0 +1,69 @@
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment variables & Secret Configs (CỰC KỲ QUAN TRỌNG)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+.next/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# Go & Java
+*.exe
+*.exe shadow
+*.out
+*.app
+*.bin
+*.jar
+*.war
+
+# Logs & Databases
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# IDE & Editor files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
