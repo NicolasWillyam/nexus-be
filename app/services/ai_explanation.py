@@ -38,16 +38,19 @@ class LLMClientWrapper:
     def _get_available_model_names(self) -> List[str]:
         """
         Dò tìm danh sách các model đang hoạt động và hỗ trợ hàm generateContent trên API Key hiện tại.
+        Đồng thời loại bỏ các model chuyên dụng cho âm thanh (TTS).
         """
         discovered_models = []
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
-                    discovered_models.append(m.name)
+                    # Bỏ qua các model bản Text-to-Speech (TTS) chỉ hỗ trợ Audio
+                    if "tts" not in m.name.lower():
+                        discovered_models.append(m.name)
         except Exception as e:
             logger.warning(f"[Module 4.1] Không thể lấy danh sách Model tự động: {str(e)}")
 
-        # Nếu tìm thấy model từ API thì ưu tiên dùng, nếu không sẽ dùng danh sách dự phòng
+        # Nếu tìm thấy model từ API thì ưu tiên dùng, nếu không sẽ dùng danh sách dự phòng chuẩn
         if discovered_models:
             return discovered_models
 
@@ -86,7 +89,7 @@ class LLMClientWrapper:
                     prompt,
                     generation_config={
                         "temperature": 0.15,
-                        "max_output_tokens": 4096,  # Nâng từ 1024 lên 2048 để AI viết trọn vẹn bài
+                        "max_output_tokens": 4096,  # Nâng token để AI viết trọn vẹn bài
                         "top_p": 0.8
                     }
                 )
@@ -97,9 +100,11 @@ class LLMClientWrapper:
 
             except Exception as e:
                 last_exception = e
-                # Nếu gặp lỗi 404/Not Found thì bỏ qua model này để thử model tiếp theo
-                if "404" in str(e) or "not found" in str(e).lower():
-                    logger.warning(f"[Module 4.1] Model {model_name} không khả dụng (404), thử model tiếp theo...")
+                err_str = str(e).lower()
+                
+                # SỬA ĐỔI: Bỏ qua không chỉ lỗi 404 mà cả lỗi 400 / không hỗ trợ modalities / TTS để chuyển sang model tiếp theo
+                if "404" in err_str or "not found" in err_str or "400" in err_str or "modalities" in err_str or "tts" in err_str:
+                    logger.warning(f"[Module 4.1] Model {model_name} không khả dụng hoặc không hỗ trợ văn bản ({str(e)}), thử model tiếp theo...")
                     continue
                 else:
                     raise e
@@ -117,9 +122,6 @@ class PromptBuilder:
 
     @staticmethod
     def get_system_instruction() -> str:
-        """
-        Thiết lập các quy tắc cứng (System Rules) đóng vai trò làm 'Rào chắn tư duy' cho AI.
-        """
         return (
             "Bạn là 'AI Financial Portfolio Advisor' - Cố vấn Đầu tư Tài chính Cao cấp.\n"
             "Nhiệm vụ của bạn là giải thích lý do phân bổ vốn cho người dùng dựa HOÀN TOÀN vào dữ liệu JSON được cấp.\n\n"
@@ -136,9 +138,6 @@ class PromptBuilder:
 
     @classmethod
     def build_user_prompt(cls, portfolio_data: Dict[str, Any], analytics_data: Dict[str, Any]) -> str:
-        """
-        Nén và làm sạch dữ liệu từ Cluster 2 & 3 thành một cấu trúc JSON gọn gàng để Inject vào Prompt.
-        """
         scores = portfolio_data.get("scores", {})
         allocation = portfolio_data.get("allocation", {})
         weights = allocation.get("weights_percent", {})
@@ -146,7 +145,6 @@ class PromptBuilder:
         total_inv = allocation.get("total_investment", 10000.0)
         applied_cap = allocation.get("applied_cap_percent", 35.0)
 
-        # Cấu trúc lại Context để loại bỏ thông tin thừa (giảm Token consumption)
         stocks_context = {}
         for sym, score in scores.items():
             analytics = analytics_data.get(sym, {})
@@ -194,17 +192,9 @@ class PromptBuilder:
 # MODULE 4.3: RESPONSE VALIDATION & GUARDRAILS (Nhóm G5 - SV 3)
 # =====================================================================
 class GuardrailValidator:
-    """
-    Module 4.3: Kiểm tra an toàn cho kết quả đầu ra của AI.
-    """
-
-    # Bổ sung thêm các thuật ngữ giao dịch và khuyến nghị tiếng Việt vào SAFE_FINANCIAL_TOKENS
     SAFE_FINANCIAL_TOKENS = {
-        # Thuật ngữ Tài chính & Chỉ số
         "USD", "VND", "RSI", "MACD", "SMA", "EMA", "BETA", "CAP", "SCORE", "JSON", "AI", "API",
         "NAV", "PE", "PB", "EPS", "ROE", "ROA", "CAGR", "HOLT",
-        
-        # Từ khuyến nghị & Khái niệm giao dịch bằng Tiếng Việt / Tiếng Anh
         "MUA", "BAN", "BÁN", "NAM", "NẮM", "GIU", "GIỮ", 
         "TRUNG", "BÌNH", "LỆNH", "GIAO", "DỊCH", "DANH", "MỤC", "TỔNG",
         "BUY", "SELL", "HOLD", "HIGH", "LOW", "NEUTRAL", "BULLISH", "BEARISH", "OVERSOLD", "OVERBOUGHT"
@@ -216,25 +206,15 @@ class GuardrailValidator:
         allocations = portfolio_data.get("allocation", {}).get("amount_allocated", {})
         valid_symbols = set(allocations.keys())
 
-        # -------------------------------------------------------------
-        # TẦNG 1: Kiểm tra mã cổ phiếu lạ (Anti-Hallucinated Symbols)
-        # -------------------------------------------------------------
-        # Tìm các từ viết hoa 2-5 ký tự
         raw_found_tokens = set(re.findall(r'\b[A-Z]{2,5}\b', ai_response_text))
-        
-        # Loại bỏ các từ an toàn và các mã nằm trong danh mục truyền vào
         suspicious_symbols = raw_found_tokens - cls.SAFE_FINANCIAL_TOKENS - valid_symbols
 
         if suspicious_symbols:
             errors.append(f"Phát hiện mã cổ phiếu lạ/không nằm trong danh mục: {suspicious_symbols}")
 
-        # -------------------------------------------------------------
-        # TẦNG 2: Kiểm tra lệch tổng số tiền đầu tư (Amount Drift Check)
-        # -------------------------------------------------------------
         total_inv = portfolio_data.get("allocation", {}).get("total_investment", 0.0)
         total_inv_int = int(total_inv)
         
-        # Tạo các định dạng chuỗi số tiền phổ biến ($10,000 / 10000 / $10000)
         expected_patterns = [
             f"{total_inv_int}",
             f"{total_inv_int:,}",
@@ -245,9 +225,6 @@ class GuardrailValidator:
         if not has_amount_match and total_inv > 0:
             errors.append(f"Không tìm thấy xác nhận tổng số tiền ${total_inv_int:,} trong văn bản giải thích.")
 
-        # -------------------------------------------------------------
-        # TẦNG 3: Kiểm tra tính rỗng hoặc phản hồi từ chối của AI
-        # -------------------------------------------------------------
         if len(ai_response_text) < 100:
             errors.append("Văn bản phản hồi quá ngắn hoặc không đủ chất lượng.")
 
@@ -262,43 +239,23 @@ class GuardrailValidator:
 # MAIN SERVICE: CLUSTER 4 INTEGRATION SERVICE
 # =====================================================================
 class AIExplanationService:
-    """
-    Service chính điều phối toàn bộ Cluster 4.
-    Kết nối Module 4.1, 4.2, 4.3 và cung cấp giải pháp Fallback An toàn (Deterministic Engine).
-    """
-
     @classmethod
     def generate_explanation(
         cls, 
         portfolio_data: Dict[str, Any], 
         analytics_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Hàm chính sinh bài giải thích phân bổ danh mục.
-        
-        Returns:
-            dict: {
-                "explanation_markdown": str,
-                "is_ai_generated": bool,
-                "guardrail_passed": bool,
-                "validation_errors": List[str]
-            }
-        """
-        # 1. Khởi tạo Module 4.2 - Tạo Prompt
         system_instruction = PromptBuilder.get_system_instruction()
         user_prompt = PromptBuilder.build_user_prompt(portfolio_data, analytics_data)
 
-        # 2. Khởi tạo Module 4.1 - Gọi LLM API
         llm_wrapper = LLMClientWrapper()
 
         try:
-            # Gọi API sinh bài
             raw_ai_text = llm_wrapper.generate_text_with_retry(
                 prompt=user_prompt, 
                 system_instruction=system_instruction
             )
 
-            # 3. Khởi tạo Module 4.3 - Kiểm tra Guardrails
             is_valid, validation_errors = GuardrailValidator.validate(raw_ai_text, portfolio_data)
 
             if is_valid:
@@ -331,10 +288,6 @@ class AIExplanationService:
 
     @staticmethod
     def _generate_deterministic_fallback(portfolio_data: Dict[str, Any], analytics_data: Dict[str, Any]) -> str:
-        """
-        Hàm Fallback tạo bài giải thích bằng Template Engine chuẩn xác 100% 
-        khi AI gặp sự cố hoặc vi phạm Guardrail.
-        """
         allocation = portfolio_data.get("allocation", {})
         scores = portfolio_data.get("scores", {})
         total_inv = allocation.get("total_investment", 10000.0)
@@ -358,4 +311,4 @@ class AIExplanationService:
 
         details_str = "\n".join(details_list)
 
-        return f"""### 📊 Tóm tắt Phân bổ Danh mục Đầu tư (Tổng vốn: ${total_inv:,.2f})"""
+        return f"""### 📊 Tóm tắt Phân bổ Danh mục Đầu tư (Tổng vốn: ${total_inv:,.2f})\n\n{details_str}"""
