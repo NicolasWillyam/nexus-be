@@ -106,3 +106,17 @@ def optimize_portfolio_with_ai_explanation(
             "validation_errors": ai_result["validation_errors"]
         }
     }
+@router.get("/{portfolio_id}/factors")
+def get_portfolio_factors(portfolio_id: str):
+    """
+    [SV11] API lấy dữ liệu Factor Chart (Quality, Momentum, Value, Risk)
+    """
+    return {
+        "portfolio_id": portfolio_id,
+        "factors": [
+            {"factor": "Quality", "score": 95},
+            {"factor": "Momentum", "score": 90},
+            {"factor": "Value", "score": 80},
+            {"factor": "Risk", "score": 75}
+        ]
+    }
